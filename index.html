@@ -134,6 +134,10 @@ body{background:linear-gradient(160deg,#134e2c,#1d7a3e 60%,#2b9a50)}
   <div class="opt">
     <span>경기 시간</span>
     <div class="seg" data-set="time"><button data-v="60">1분</button><button data-v="120">2분</button><button data-v="180">3분</button></div>
+    <span>골대 크기</span>
+    <div class="seg" data-set="goal"><button data-v="0">작게</button><button data-v="1">보통</button><button data-v="2">크게</button></div>
+    <span>점프력</span>
+    <div class="seg" data-set="jump"><button data-v="0">낮게</button><button data-v="1">보통</button><button data-v="2">높게</button></div>
     <span>게임 속도</span>
     <div class="seg" data-set="speed"><button data-v="slow">느림</button><button data-v="normal">보통</button><button data-v="fast">빠름</button></div>
     <span>왼쪽 색</span><div class="sw" data-side="0"></div>
@@ -161,6 +165,7 @@ body{background:linear-gradient(160deg,#134e2c,#1d7a3e 60%,#2b9a50)}
     🦶 <b>차기</b>: 공이 발 앞에 있을 때 → 공이 높이 떠요<br>
     🚀 <b>발리슛</b>: 점프한 채로 차기 → 낮고 빠르게 날아가요<br>
     🐱 <b>헤딩</b>: 점프해서 머리로 공을 받아 넘기기<br>
+    🥅 메뉴에서 <b>골대 크기</b>와 <b>점프력</b>을 바꿀 수 있어요 (점프 높게 + 큰 골대면 크로스바 위에 올라설 수 있어요)<br>
     💡 컴퓨터·온라인 대전에서는 두 키 세트 모두 쓸 수 있어요<br>
     ⏸ <kbd>Esc</kbd> 일시정지
   </div>
@@ -249,12 +254,17 @@ const DB_ROOT = 'nyangSoccer';
 const W = 480, H = 300, HALF = 240;
 const GROUND = 268;                              // 발과 공이 닿는 바닥 y
 const B_R = 11;                                  // 공 반지름
-const GOAL_W = 38, BAR_Y = 188, BAR_T = 6;       // 골대 깊이, 크로스바 높이/두께
+const BAR_T = 6;                                 // 크로스바 두께
+// 골대 크기·점프력은 경기 설정 (0 작게/낮게, 1 보통, 2 크게/높게). 게임 상태에 들어 있어서 온라인 두 기기도 똑같이 적용
+const GOAL_SIZES = [[38, 188], [46, 164], [52, 140]];   // [골대 깊이, 크로스바 높이 y]
+const JUMPS = [-7.6, -8.4, -10.6];                      // 높게면 큰 골대 크로스바 위에도 올라설 수 있음
+let GOAL_W = 52, BAR_Y = 140, JUMP_V = -8.4;
+function useCfg(G) { GOAL_W = G.goalW; BAR_Y = G.barY; JUMP_V = G.jumpV; }
 const HEAD_R = 21, HEAD_OFF = 40;                // 머리 반지름, 발에서 머리 중심까지
 const BODY_R = 12, BODY_OFF = 16;                // 몸
 const FOOT_R = 7, LEG = 14, KICK_T = 14;         // 발, 다리 길이, 킥 동작 프레임
 const HEAD_PUSH = 1.4;
-const GRAV_B = 0.3, GRAV_P = 0.42, JUMP_V = -8.4, RUN_V = 3.1, MAX_BV = 15;
+const GRAV_B = 0.3, GRAV_P = 0.42, RUN_V = 3.1, MAX_BV = 15;
 const PHASES = ['ready', 'play', 'goal', 'over'];
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const IDLE = { x: 0, y: 0, hit: false };
@@ -273,11 +283,13 @@ function newPlayer(side) {
 function newBall(G) {
   return { x: HALF, y: 110, vx: (rnd(G) - 0.5) * 1.2, vy: 0, px: HALF, py: 110 };
 }
-function newGame(timeSec, rate, seed) {
-  const G = { seed: (seed | 0) || 12345, players: [newPlayer(0), newPlayer(1)], ball: null, score: [0, 0], lastScorer: -1, winner: -1, lastTouch: -1,
+function newGame(timeSec, rate, seed, goal, jump) {
+  const gs = GOAL_SIZES[goal == null ? 2 : goal] || GOAL_SIZES[2], jv = JUMPS[jump == null ? 1 : jump] || JUMPS[1];
+  const G = { seed: (seed | 0) || 12345, goalW: gs[0], barY: gs[1], jumpV: jv, players: [newPlayer(0), newPlayer(1)], ball: null, score: [0, 0], lastScorer: -1, winner: -1, lastTouch: -1,
            phase: 'ready', timer: Math.round(rate * 1.4), rate, clock: timeSec * rate, golden: false, idle: 0, tick: 0,
            fx: { hit: 0, power: 0, point: 0, whistle: 0, win: 0, px: 0, py: 0 } };
   G.ball = newBall(G);
+  useCfg(G);
   return G;
 }
 
@@ -342,8 +354,14 @@ function playerStep(p, inp) {
   p.vx = inp.x * RUN_V;
   p.x = clamp(p.x + p.vx, 16, W - 16);
   if (inp.y === -1 && p.onGround) { p.vy = JUMP_V; p.onGround = false; }
+  const py0 = p.y;
   p.vy += GRAV_P; p.y += p.vy;
+  p.onGround = false;
   if (p.y >= GROUND) { p.y = GROUND; p.vy = 0; p.onGround = true; }
+  // 크로스바 위에 올라설 수 있음 (원작처럼)
+  if (p.vy >= 0 && py0 <= BAR_Y + 0.01 && p.y >= BAR_Y && (p.x - 10 < GOAL_W || p.x + 10 > W - GOAL_W)) {
+    p.y = BAR_Y; p.vy = 0; p.onGround = true;
+  }
   // 크로스바에 머리가 박히지 않게
   for (const [x0, x1] of [[0, GOAL_W], [W - GOAL_W, W]]) {
     const cy = BAR_Y + BAR_T / 2, hy = p.y - HEAD_OFF, qx = clamp(p.x, x0, x1);
@@ -417,6 +435,7 @@ function savePrev(G) {
 function endGame(G, w) { G.phase = 'over'; G.winner = w; G.timer = 0; G.fx.win++; }
 
 function tick(G, inputs) {
+  useCfg(G);
   G.tick++;
   savePrev(G);
   const b = G.ball;
@@ -474,14 +493,15 @@ function tick(G, inputs) {
 /* ================= 컴퓨터 AI ================= */
 const AI_LV = {
   veasy:  { react: 14, err: 34, kick: 0.15, jump: 0,    speed: 0.45, look: 5,  miss: 0.35, defend: 0 },
-  easy:   { react: 8,  err: 18, kick: 0.4,  jump: 0.05, speed: 0.7,  look: 10, miss: 0.12, defend: 0 },
-  normal: { react: 4,  err: 8,  kick: 0.65, jump: 0.12, speed: 0.85, look: 16, miss: 0,    defend: 0 },
-  hard:   { react: 1,  err: 2,  kick: 0.95, jump: 0.3,  speed: 1,    look: 24, miss: 0,    defend: 0 }
+  easy:   { react: 8,  err: 18, kick: 0.4,  jump: 0.05, speed: 0.7,  look: 10, miss: 0.12, defend: 0.3 },
+  normal: { react: 4,  err: 8,  kick: 0.65, jump: 0.12, speed: 0.85, look: 16, miss: 0,    defend: 0.6 },
+  hard:   { react: 1,  err: 2,  kick: 0.95, jump: 0.3,  speed: 1,    look: 24, miss: 0,    defend: 0.9 }
 };
 function makeAI(side, lv) {
   return { side, lv: AI_LV[lv] || AI_LV.normal, cd: 0, target: side === 0 ? 130 : W - 130, err: 0, behind: false };
 }
 function aiInput(ai, G) {
+  useCfg(G);
   const p = G.players[ai.side], b = G.ball, lv = ai.lv, f = ai.side === 0 ? 1 : -1;
   const inp = { x: 0, y: 0, hit: false };
   if (G.phase !== 'play') { ai.cd = 0; return inp; }
@@ -498,9 +518,9 @@ function aiInput(ai, G) {
     const goalFront = ai.side === 0 ? GOAL_W + 26 : W - GOAL_W - 26;
     const o = G.players[1 - ai.side];
     if (ownHalf && b.vx * f < -2.5 && ai.behind) { ai.target = goalFront; ai.guard = true; }
-    else if (Math.abs(o.x - b.x) + 24 < Math.abs(p.x - b.x) && Math.random() < lv.defend) {
-      ai.target = goalFront + (b.x - goalFront) * 0.4; ai.guard = true;          // 상대가 공에 더 가까우면 물러나 수비
-    } else ai.guard = false;
+    else if (lv.defend && Math.abs(o.x - s.x) + 20 < Math.abs(p.x - s.x) && (ai.defending || Math.random() < lv.defend)) {
+      ai.target = goalFront + (s.x - goalFront) * 0.15; ai.guard = true; ai.defending = true;   // 상대가 공에 더 가까우면 골문 앞으로 돌아가 막기
+    } else { ai.guard = false; ai.defending = false; }
     if (lv.miss && Math.random() < lv.miss) ai.target += (Math.random() < 0.5 ? 1 : -1) * 45;
     ai.target += ai.err;
   }
@@ -539,7 +559,7 @@ const decIn = c => ({ x: Math.floor(c / 6) - 1, y: Math.floor((c % 6) / 2) - 1, 
 
 function createRollback(match, me, send, sendSync) {
   const rb = {
-    me, rem: 1 - me, mid: match.id, G: newGame(match.len, match.rate, match.seed),
+    me, rem: 1 - me, mid: match.id, G: newGame(match.len, match.rate, match.seed, match.goal, match.jump),
     frame: 0, delay: match.delay, maxRoll: match.maxRoll, step: 1000 / match.rate,
     inp: [[], []], used: [], snaps: [], upTo: match.delay - 1, rollFrom: Infinity, acc: 0,
     peerAck: match.delay - 1, remF: 0, remT: -1, rtt: 0, lastPeerT: 0, lastPeerRecv: 0, lastSend: -1e9,
@@ -654,15 +674,18 @@ function viewFromGame(G, a) {
 
 /* ================= 설정 ================= */
 const Settings = (() => {
-  const d = { time: 60, speed: 'normal', cpu: 'normal', name: '', sound: true, skins: [0, 1], mySkin: 0 };
+  const d = { time: 60, goal: 2, jump: 1, speed: 'normal', cpu: 'normal', name: '', sound: true, skins: [0, 1], mySkin: 0 };
   try { Object.assign(d, JSON.parse(localStorage.getItem('nyangSoccer') || '{}')); } catch (e) {}
   if (![60, 120, 180].includes(d.time)) d.time = 60;
+  if (![0, 1, 2].includes(d.goal)) d.goal = 2;
+  if (![0, 1, 2].includes(d.jump)) d.jump = 1;
   return d;
 })();
 function saveSettings() { try { localStorage.setItem('nyangSoccer', JSON.stringify(Settings)); } catch (e) {} }
 const RATES = { slow: 48, normal: 60, fast: 72 };
 const SPEED_NAME = { slow: '느림', normal: '보통', fast: '빠름' };
 const timeName = s => `${Math.round(s / 60)}분`;
+const GOAL_NAME = ['작게', '보통', '크게'], JUMP_NAME = ['낮게', '보통', '높게'];
 const newSeed = () => (Math.random() * 2147483647) | 0;
 
 const $ = s => document.querySelector(s);
@@ -1150,7 +1173,7 @@ function showScreen(id) {
 }
 function startDemo() {
   mode = 'demo'; paused = false; overShown = false; RB = null;
-  G = newGame(60, 60, newSeed()); AIs = [makeAI(0, 'hard'), makeAI(1, 'normal')];
+  G = newGame(60, 60, newSeed(), Settings.goal, Settings.jump); AIs = [makeAI(0, 'hard'), makeAI(1, 'normal')];
   Skins = Settings.skins.slice(); Names = Skins.map(k => SKINS[k].name);
   Sound.muted = true; fxSeen = null; acc = 0;
   buildTouch('none');
@@ -1160,7 +1183,7 @@ function startGame(kind, cont) {
   if (!cont || lastKind !== kind) series = [0, 0];
   lastKind = kind;
   mode = kind; paused = false; overShown = false; RB = null;
-  G = newGame(Settings.time, RATES[Settings.speed] || 60, newSeed()); acc = 0;
+  G = newGame(Settings.time, RATES[Settings.speed] || 60, newSeed(), Settings.goal, Settings.jump); acc = 0;
   clearEdges(); fxSeen = null; Sound.muted = false; R.parts = [];
   Skins = Settings.skins.slice(); Names = Skins.map(k => SKINS[k].name);
   if (kind === 'cpu') { AIs = [null, makeAI(1, Settings.cpu)]; Names[1] += ' (컴퓨터)'; }
@@ -1302,7 +1325,7 @@ function getName() {
 function makeMatch() {
   const rate = RATES[Settings.speed] || 60;
   return { id: (Date.now() % 1e9) + Math.floor(Math.random() * 1000), seed: newSeed(), rate, len: Settings.time,
-           delay: Math.max(1, Math.round(rate * 0.05)), maxRoll: Math.round(rate * 0.6) };
+           goal: Settings.goal, jump: Settings.jump, delay: Math.max(1, Math.round(rate * 0.05)), maxRoll: Math.round(rate * 0.6) };
 }
 function startOnline(match) {
   const me = Net.role === 'host' ? 0 : 1, room = Net.room;
@@ -1406,7 +1429,7 @@ function updateRoomUI() {
   $('#btn-start').style.display = host ? 'block' : 'none';
   $('#btn-start').disabled = !Net.names[1];
   $('#room-info').textContent = host
-    ? (Net.names[1] ? `경기 ${timeName(Settings.time)} · 속도 ${SPEED_NAME[Settings.speed]} — 준비되면 시작!` : '친구에게 방 코드를 알려 주세요')
+    ? (Net.names[1] ? `경기 ${timeName(Settings.time)} · 골대 ${GOAL_NAME[Settings.goal]} · 점프 ${JUMP_NAME[Settings.jump]} · 속도 ${SPEED_NAME[Settings.speed]}` : '친구에게 방 코드를 알려 주세요')
     : '방장이 시작하면 경기가 시작돼요';
 }
 function hostStart(cont) {
@@ -1644,8 +1667,11 @@ document.addEventListener('click', e => {
   const seg = e.target.closest('.seg button');
   if (seg) {
     const key = seg.parentElement.dataset.set;
-    Settings[key] = key === 'time' ? +seg.dataset.v : seg.dataset.v;
-    saveSettings(); updSegs(); updContinue(); return;
+    Settings[key] = ['time', 'goal', 'jump'].includes(key) ? +seg.dataset.v : seg.dataset.v;
+    saveSettings(); updSegs(); updContinue();
+    if ((key === 'goal' || key === 'jump') && mode === 'demo') startDemo();   // 메뉴 뒤 화면에 바로 반영
+    if (Net.role === 'host') updateRoomUI();
+    return;
   }
   const b = e.target.closest('[data-act]'); if (!b) return;
   Sound.get(); b.blur();
