@@ -281,7 +281,7 @@ function newPlayer(side) {
   return { side, x, y: GROUND, vx: 0, vy: 0, onGround: true, kickT: 0, kicked: false, touching: false, px: x, py: GROUND };
 }
 function newBall(G) {
-  return { x: HALF, y: 110, vx: (rnd(G) - 0.5) * 1.2, vy: 0, px: HALF, py: 110 };
+  return { x: HALF, y: 40, vx: (rnd(G) - 0.5) * 0.4, vy: 0, px: HALF, py: 40 };
 }
 function newGame(timeSec, rate, seed, goal, jump) {
   const gs = GOAL_SIZES[goal == null ? 2 : goal] || GOAL_SIZES[2], jv = JUMPS[jump == null ? 1 : jump] || JUMPS[1];
@@ -492,19 +492,25 @@ function tick(G, inputs) {
 
 /* ================= 컴퓨터 AI ================= */
 const AI_LV = {
-  veasy:  { react: 14, err: 34, kick: 0.15, jump: 0,    speed: 0.45, look: 5,  miss: 0.35, defend: 0 },
-  easy:   { react: 8,  err: 18, kick: 0.4,  jump: 0.05, speed: 0.7,  look: 10, miss: 0.12, defend: 0.3 },
-  normal: { react: 4,  err: 8,  kick: 0.65, jump: 0.12, speed: 0.85, look: 16, miss: 0,    defend: 0.6 },
-  hard:   { react: 1,  err: 2,  kick: 0.95, jump: 0.3,  speed: 1,    look: 24, miss: 0,    defend: 0.9 }
+  // delay: 공을 몇 프레임 늦게 보는지 (사람 반응 속도 흉내, 60프레임 = 1초)
+  veasy:  { delay: 32, react: 16, err: 40, kick: 0.03, jump: 0,    speed: 0.45, look: 4,  miss: 0.4,  defend: 0.9 },
+  easy:   { delay: 24, react: 12, err: 26, kick: 0.05, jump: 0.03, speed: 0.6,  look: 8,  miss: 0.2,  defend: 0.7 },
+  normal: { delay: 12, react: 5,  err: 10, kick: 0.16, jump: 0.1,  speed: 0.9,  look: 16, miss: 0.03, defend: 0.3 },
+  hard:   { delay: 10, react: 3,  err: 7,  kick: 0.25, jump: 0.15, speed: 1,    look: 20, miss: 0,    defend: 0.2 }
 };
 function makeAI(side, lv) {
   return { side, lv: AI_LV[lv] || AI_LV.normal, cd: 0, target: side === 0 ? 130 : W - 130, err: 0, behind: false };
 }
 function aiInput(ai, G) {
   useCfg(G);
-  const p = G.players[ai.side], b = G.ball, lv = ai.lv, f = ai.side === 0 ? 1 : -1;
+  const p = G.players[ai.side], lv = ai.lv, f = ai.side === 0 ? 1 : -1;
   const inp = { x: 0, y: 0, hit: false };
-  if (G.phase !== 'play') { ai.cd = 0; return inp; }
+  if (G.phase !== 'play') { ai.cd = 0; ai.seen = []; return inp; }
+  // 사람처럼 공을 조금 늦게 본다 (난이도별 반응 지연)
+  const gb = G.ball; ai.seen = ai.seen || [];
+  ai.seen.push({ x: gb.x, y: gb.y, vx: gb.vx, vy: gb.vy });
+  while (ai.seen.length > (lv.delay || 0) + 1) ai.seen.shift();
+  const b = ai.seen[0];
   if (--ai.cd <= 0) {
     ai.cd = lv.react;
     ai.err = (Math.random() * 2 - 1) * lv.err;
@@ -527,9 +533,10 @@ function aiInput(ai, G) {
   const dx = ai.target - p.x;
   if (Math.abs(dx) > 3 && Math.random() < lv.speed) inp.x = Math.sign(dx);
   // 공보다 우리 골대 쪽에 있지 않을 때(뒤처짐): 공을 뒤에서 밀어 자책골 넣지 않기
-  const bd = b.x - p.x, toward = Math.sign(bd) === Math.sign(inp.x);
-  if (ai.behind && toward && Math.abs(bd) < 64) {
-    const resting = b.y > GROUND - B_R - 3 && Math.abs(b.vx) < 1.5 && Math.abs(b.vy) < 1.5;
+  //  (이건 사람도 눈앞에서 바로 알아채는 거라 실제 공 위치로 판단)
+  const bd = gb.x - p.x, toward = Math.sign(bd) === Math.sign(inp.x), behindNow = bd * f < -6;
+  if (behindNow && toward && Math.abs(bd) < 64) {
+    const resting = gb.y > GROUND - B_R - 3 && Math.abs(gb.vx) < 1.5 && Math.abs(gb.vy) < 1.5;
     if (resting && p.onGround && Math.abs(bd) > 26 && Math.abs(bd) < 40) inp.y = -1;   // 멈춘 공만 뛰어넘기
     else if (!resting) inp.x = 0;                                                     // 움직이는 공은 뒤에서 밀지 않고 기다리기
   }
