@@ -493,10 +493,11 @@ function tick(G, inputs) {
 /* ================= 컴퓨터 AI ================= */
 const AI_LV = {
   // delay: 공을 몇 프레임 늦게 보는지 (사람 반응 속도 흉내, 60프레임 = 1초)
-  veasy:  { delay: 32, react: 16, err: 40, kick: 0.03, jump: 0,    speed: 0.45, look: 4,  miss: 0.4,  defend: 0.9 },
-  easy:   { delay: 24, react: 12, err: 26, kick: 0.05, jump: 0.03, speed: 0.6,  look: 8,  miss: 0.2,  defend: 0.7 },
-  normal: { delay: 12, react: 5,  err: 10, kick: 0.16, jump: 0.1,  speed: 0.9,  look: 16, miss: 0.03, defend: 0.3 },
-  hard:   { delay: 10, react: 3,  err: 7,  kick: 0.25, jump: 0.15, speed: 1,    look: 20, miss: 0,    defend: 0.2 }
+  // block·rush: 킥오프 직후 작전 고를 확률 (나머지는 잠깐 기다리기), ojump: 그때 막으려고 점프하는 정도
+  veasy:  { delay: 32, react: 16, err: 40, kick: 0.03, jump: 0,    speed: 0.45, look: 4,  miss: 0.4,  defend: 0.9, block: 0.3,  rush: 0.4,  ojump: 0.05 },
+  easy:   { delay: 24, react: 12, err: 26, kick: 0.05, jump: 0.03, speed: 0.6,  look: 8,  miss: 0.2,  defend: 0.7, block: 0.4,  rush: 0.25, ojump: 0.12 },
+  normal: { delay: 12, react: 5,  err: 10, kick: 0.16, jump: 0.1,  speed: 0.9,  look: 16, miss: 0.03, defend: 0.3, block: 0.5,  rush: 0.1,  ojump: 0.25 },
+  hard:   { delay: 10, react: 3,  err: 7,  kick: 0.25, jump: 0.15, speed: 1,    look: 20, miss: 0,    defend: 0.2, block: 0.55, rush: 0.05, ojump: 0.4 }
 };
 function makeAI(side, lv) {
   return { side, lv: AI_LV[lv] || AI_LV.normal, cd: 0, target: side === 0 ? 130 : W - 130, err: 0, behind: false };
@@ -505,7 +506,37 @@ function aiInput(ai, G) {
   useCfg(G);
   const p = G.players[ai.side], lv = ai.lv, f = ai.side === 0 ? 1 : -1;
   const inp = { x: 0, y: 0, hit: false };
-  if (G.phase !== 'play') { ai.cd = 0; ai.seen = []; return inp; }
+  if (G.phase !== 'play') { ai.cd = 0; ai.seen = []; ai.open = null; ai.playT = 0; return inp; }
+  // 킥오프 직후: 매번 다른 작전 (막기 / 달려들기 / 기다리기) → 같은 꼼수가 매번 통하지 않게
+  ai.playT = (ai.playT || 0) + 1;
+  if (ai.playT === 1) {
+    const r = Math.random(), goalFront = ai.side === 0 ? GOAL_W + 22 : W - GOAL_W - 22;
+    ai.open = r < lv.block ? { plan: 'block', x: goalFront + f * Math.random() * 40, len: 70 + Math.random() * 50 }
+            : r < lv.block + lv.rush ? { plan: 'rush', wait: Math.floor(Math.random() * 10), len: 60 + Math.random() * 40 }
+            : { plan: 'hold', x: p.x - f * Math.random() * 40, len: 50 + Math.random() * 40 };
+  }
+  if (ai.open && ai.playT < ai.open.len) {
+    const o = ai.open, gb = G.ball, adx = Math.abs(gb.x - p.x), high = gb.y < p.y - HEAD_OFF;
+    let tx = o.plan === 'rush' ? gb.x - f * 12 : o.x;
+    if (o.plan === 'rush' && ai.playT < o.wait) tx = p.x;
+    if (Math.abs(tx - p.x) > 3) inp.x = Math.sign(tx - p.x);
+    // 공이 머리 위로 오거나 우리 골대 쪽으로 날아오면 점프해서 막기
+    // 날아오는 공이 내 자리에 언제, 어느 높이로 올지 계산해서 점프
+    if (p.onGround && gb.vx * f < -1.5) {
+      const T = (p.x - gb.x) / gb.vx, py = gb.y + gb.vy * T + 0.5 * GRAV_B * T * T;
+      const h = (p.y - HEAD_OFF) - py, v0 = -JUMP_V, disc = v0 * v0 - 2 * GRAV_P * h;   // h: 머리보다 얼마나 높이 오는지
+      if (h > 14 && disc > 0) {                                 // 머리보다 높게 오는 공만 점프 (낮은 공은 서서 막기)
+        const tUp = (v0 - Math.sqrt(disc)) / GRAV_P;              // 그 높이까지 올라가는 데 걸리는 시간
+        if (T > 0 && T <= tUp + 3 && Math.random() < lv.ojump * 2) inp.y = -1;
+      }
+    }
+    if (p.onGround && high && gb.y > p.y - HEAD_OFF - 120 && adx < 40 && Math.random() < lv.ojump * 0.5) inp.y = -1;
+    // 상대가 공 바로 옆에서 차려고 하면 앞을 막으며 점프 (슛 길 막기)
+    const op = G.players[1 - ai.side];
+    if (p.onGround && Math.abs(op.x - gb.x) < 45 && adx < 85 && (gb.x - p.x) * f < 10 && gb.y < p.y - 60 && gb.y > p.y - 200 && Math.random() < lv.ojump) inp.y = -1;
+    if (p.kickT <= 0 && (gb.x - p.x) * f > -2 && (gb.x - p.x) * f < 36 && Math.abs(gb.y - (p.y - 12)) < 30 && Math.random() < lv.kick * 2) inp.hit = true;
+    return inp;
+  }
   // 사람처럼 공을 조금 늦게 본다 (난이도별 반응 지연)
   const gb = G.ball; ai.seen = ai.seen || [];
   ai.seen.push({ x: gb.x, y: gb.y, vx: gb.vx, vy: gb.vy });
@@ -871,6 +902,7 @@ function layout() {
   buildBg();
 }
 addEventListener('resize', layout);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => layout());   // 글꼴을 다 불러온 뒤 배경 글씨 다시 그리기
 
 function seeded(seed) { return () => (seed = (seed * 16807) % 2147483647) / 2147483647; }
 function drawGoalBack(c, x0, x1, left) {
